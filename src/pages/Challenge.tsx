@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useEffect, useMemo, useState, useRef, useCallback } from 'react';
+import { useNavigate, useParams, useSearchParams, useBeforeUnload } from 'react-router-dom';
 import {
   DndContext,
   DragEndEvent,
@@ -11,10 +11,12 @@ import {
   useSensors,
   closestCenter,
 } from '@dnd-kit/core';
-import { ArrowLeft, Lightbulb, RotateCcw, Send, Clock, Zap, Sparkles, X, FlaskConical, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Lightbulb, RotateCcw, Send, Clock, Zap, Sparkles, X, FlaskConical, CheckCircle2, AlertTriangle, BookOpen } from 'lucide-react';
 import { EquationDisplay } from '../components/equation/EquationDisplay';
 import { DraggableCard } from '../components/equation/DraggableCard';
 import { AtomStatsTable } from '../components/equation/AtomStatsTable';
+import { QuestionNavigation } from '../components/equation/QuestionNavigation';
+import { LevelCompleteModal } from '../components/modals/LevelCompleteModal';
 import { Card, CardContent, CardHeader } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Modal, ModalFooter } from '../components/ui/Modal';
@@ -32,14 +34,14 @@ import { generateAllHints, generateBalanceReasoning } from '../utils/hintGenerat
 import { formatEquationString, getReactionTypeName, getReactionTypeDescription } from '../utils/equationParser';
 import { useTimer } from '../hooks/useTimer';
 import { cn } from '../lib/utils';
-import type { HintStep, Equation, ReactionType } from '../types';
+import type { HintStep, Equation, ReactionType, LevelCompletionStats, QuestionResult } from '../types';
 
 export function Challenge() {
   const { levelId } = useParams<{ levelId: string }>();
   const [searchParams] = useSearchParams();
   const equationIdParam = searchParams.get('equation');
   const navigate = useNavigate();
-  const { addWrongAnswer, markMastered } = useMistakesStore();
+  const { addWrongAnswer, markMastered, getByEquationId, wrongAnswers } = useMistakesStore();
   const { updateStats, updateLevelResult, checkAndUnlockThemes } = useProgressStore();
 
   const {
@@ -50,6 +52,9 @@ export function Challenge() {
     attempts,
     showResult,
     lastAnswerCorrect,
+    isRetryMode,
+    retryEquationId,
+    questionResults,
     startLevel,
     setCoefficient,
     resetCoefficients,
@@ -59,6 +64,9 @@ export function Challenge() {
     hideResultModal,
     nextEquation,
     goToEquation,
+    addQuestionResult,
+    saveProgress,
+    loadProgress,
     endLevel,
   } = useGameStore();
 
@@ -68,9 +76,12 @@ export function Challenge() {
   const [levelScore, setLevelScore] = useState(0);
   const [levelCompleted, setLevelCompleted] = useState(false);
   const [unlockedThemes, setUnlockedThemes] = useState<string[]>([]);
-  const [targetEquationId, setTargetEquationId] = useState<string | null>(null);
+  const [levelCompletionStats, setLevelCompletionStats] = useState<LevelCompletionStats | null>(null);
+  const [hasLoadedProgress, setHasLoadedProgress] = useState(false);
+  const [showResumeConfirm, setShowResumeConfirm] = useState(false);
+  const savedProgressRef = useRef<ReturnType<typeof loadProgress> | null>(null);
 
-  const { elapsedTime, formattedTime, start: startTimer, pause: pauseTimer, reset: resetTimer } = useTimer(false);
+  const { elapsedTime, formattedTime, start: startTimer, pause: pauseTimer, reset: resetTimer, set: setTimer } = useTimer(false);
 
   const sensors = useSensors(
     useSensor(MouseSensor, {
@@ -117,6 +128,10 @@ export function Challenge() {
 
   const coefficientOptions = useMemo(() => generateCoefficientOptions(10), []);
 
+  const masteredEquationIds = useMemo(() => {
+    return wrongAnswers.filter(wa => wa.mastered).map(wa => wa.equationId);
+  }, [wrongAnswers]);
+
   const reactionTypeMatchesTheme = useMemo(() => {
     if (!currentEquation || !theme) return true;
     const themeReactionTypes: Record<string, ReactionType[]> = {
@@ -131,34 +146,67 @@ export function Challenge() {
   }, [currentEquation, theme]);
 
   useEffect(() => {
-    if (levelId && levelId !== currentLevelId) {
-      startLevel(levelId);
-      startTimer();
-
-      if (equationIdParam) {
-        setTargetEquationId(equationIdParam);
+    if (!hasLoadedProgress && levelId) {
+      const saved = loadProgress();
+      if (saved && saved.levelId === levelId) {
+        savedProgressRef.current = saved;
+        setShowResumeConfirm(true);
       }
+      setHasLoadedProgress(true);
+    }
+  }, [levelId, hasLoadedProgress, loadProgress]);
+
+  useEffect(() => {
+    if (levelId && levelId !== currentLevelId && !showResumeConfirm) {
+      if (equationIdParam) {
+        startLevel(levelId, { retryEquationId: equationIdParam });
+      } else {
+        startLevel(levelId);
+      }
+      setTimer(0);
+      startTimer();
     }
     return () => {
       pauseTimer();
     };
-  }, [levelId, currentLevelId, startLevel, startTimer, pauseTimer, equationIdParam]);
-
-  useEffect(() => {
-    if (targetEquationId && equations.length > 0 && currentLevelId === levelId) {
-      const idx = equations.findIndex(eq => eq.id === targetEquationId);
-      if (idx >= 0 && idx !== currentEquationIndex) {
-        goToEquation(idx);
-      }
-      setTargetEquationId(null);
-    }
-  }, [targetEquationId, equations, currentLevelId, levelId, currentEquationIndex, goToEquation]);
+  }, [levelId, currentLevelId, startLevel, startTimer, pauseTimer, setTimer, equationIdParam, showResumeConfirm]);
 
   useEffect(() => {
     if (currentEquation) {
       setCurrentHintStep(0);
     }
   }, [currentEquationIndex, currentEquation]);
+
+  useEffect(() => {
+    if (currentLevelId) {
+      saveProgress();
+    }
+  }, [currentLevelId, currentEquationIndex, coefficients, elapsedTime, hintsUsed, attempts, questionResults, saveProgress]);
+
+  useBeforeUnload(
+    useCallback(() => {
+      if (currentLevelId && !levelCompleted) {
+        saveProgress();
+      }
+    }, [currentLevelId, levelCompleted, saveProgress])
+  );
+
+  const handleResumeConfirm = (resume: boolean) => {
+    setShowResumeConfirm(false);
+    if (resume && savedProgressRef.current) {
+      setTimer(savedProgressRef.current.elapsedTime);
+      startTimer();
+    } else {
+      if (equationIdParam) {
+        startLevel(levelId!, { retryEquationId: equationIdParam });
+      } else {
+        startLevel(levelId!);
+      }
+      setTimer(0);
+      startTimer();
+    }
+    savedProgressRef.current = null;
+  };
 
   const handleDragStart = (event: DragStartEvent) => {
     setActiveDragId(event.active.id as string);
@@ -183,11 +231,56 @@ export function Challenge() {
     setCoefficient(index, 0);
   };
 
+  const calculateLevelCompletionStats = useCallback((): LevelCompletionStats => {
+    const correctAnswers = questionResults.filter(r => r.correct).length;
+    const wrongAnswers = questionResults.filter(r => !r.correct).length;
+
+    const reactionTypeStats: Record<string, { correct: number; total: number }> = {};
+    questionResults.forEach(result => {
+      const eq = getEquationById(result.equationId);
+      if (eq) {
+        if (!reactionTypeStats[eq.type]) {
+          reactionTypeStats[eq.type] = { correct: 0, total: 0 };
+        }
+        reactionTypeStats[eq.type].total++;
+        if (result.correct) {
+          reactionTypeStats[eq.type].correct++;
+        }
+      }
+    });
+
+    return {
+      levelId: levelId!,
+      levelName: level?.name || '',
+      totalQuestions: questionResults.length,
+      correctAnswers,
+      wrongAnswers,
+      totalHintsUsed: hintsUsed,
+      totalTime: elapsedTime,
+      stars: calculateStars(levelScore, elapsedTime, hintsUsed),
+      score: levelScore,
+      reactionTypeStats,
+      questionResults: [...questionResults],
+    };
+  }, [questionResults, hintsUsed, elapsedTime, levelScore, levelId, level]);
+
   const handleSubmit = () => {
     if (!currentEquation) return;
 
     incrementAttempts();
     const validation = validateAnswer(currentEquation, coefficients);
+
+    const questionResult: QuestionResult = {
+      equationId: currentEquation.id,
+      correct: validation.valid,
+      timeSpent: elapsedTime,
+      hintsUsed,
+      attempts: attempts + 1,
+      answeredAt: new Date().toISOString(),
+      mastered: false,
+    };
+
+    addQuestionResult(questionResult);
 
     if (validation.valid) {
       const score = calculateQuestionScore(
@@ -199,15 +292,16 @@ export function Challenge() {
 
       updateStats(true, elapsedTime, hintsUsed, score);
       setLevelScore(prev => prev + score);
-      showResultModal(true);
 
-      if (equationIdParam) {
-        const mistakeStore = useMistakesStore.getState();
-        const mistake = mistakeStore.getByEquationId(currentEquation.id);
+      if (isRetryMode && retryEquationId === currentEquation.id) {
+        const mistake = getByEquationId(currentEquation.id);
         if (mistake && !mistake.mastered) {
           markMastered(mistake.id);
+          questionResult.mastered = true;
         }
       }
+
+      showResultModal(true);
     } else {
       showResultModal(false);
 
@@ -232,8 +326,10 @@ export function Challenge() {
     hideResultModal();
 
     if (currentEquationIndex >= equations.length - 1) {
-      const stars = calculateStars(levelScore, elapsedTime, hintsUsed);
-      const result = generateLevelResult(levelId!, stars, elapsedTime, hintsUsed, true);
+      const stats = calculateLevelCompletionStats();
+      setLevelCompletionStats(stats);
+
+      const result = generateLevelResult(levelId!, stats.stars, elapsedTime, hintsUsed, true);
       updateLevelResult(result);
 
       const newUnlocks = checkAndUnlockThemes();
@@ -259,6 +355,9 @@ export function Challenge() {
   };
 
   const handleBack = () => {
+    if (currentLevelId && !levelCompleted) {
+      saveProgress();
+    }
     endLevel();
     navigate('/');
   };
@@ -266,6 +365,35 @@ export function Challenge() {
   const handleFinish = () => {
     endLevel();
     navigate('/');
+  };
+
+  const handleViewStats = () => {
+    const stats = levelCompletionStats || calculateLevelCompletionStats();
+    const statsParam = encodeURIComponent(JSON.stringify(stats));
+    navigate(`/stats?levelResult=${statsParam}`);
+  };
+
+  const handleQuestionSelect = (index: number) => {
+    if (index === currentEquationIndex) return;
+    goToEquation(index);
+    resetTimer();
+    startTimer();
+  };
+
+  const handlePreviousQuestion = () => {
+    if (currentEquationIndex > 0) {
+      goToEquation(currentEquationIndex - 1);
+      resetTimer();
+      startTimer();
+    }
+  };
+
+  const handleNextQuestion = () => {
+    if (currentEquationIndex < equations.length - 1) {
+      goToEquation(currentEquationIndex + 1);
+      resetTimer();
+      startTimer();
+    }
   };
 
   if (!level || equations.length === 0) {
@@ -305,7 +433,7 @@ export function Challenge() {
     >
       <div className="min-h-screen pt-24 pb-12 px-8 ml-64">
         <div className="max-w-6xl mx-auto">
-          <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-4">
               <Button variant="ghost" onClick={handleBack}>
                 <ArrowLeft className="w-4 h-4 mr-2" />
@@ -336,11 +464,38 @@ export function Challenge() {
             </div>
           </div>
 
+          {isRetryMode && retryEquationId && (
+            <div className="mb-6 p-4 rounded-xl bg-gradient-to-r from-orange-500/20 to-red-500/20 border border-orange-500/30 flex items-center gap-4">
+              <AlertTriangle className="w-6 h-6 text-orange-400 flex-shrink-0" />
+              <div className="flex-1">
+                <p className="text-orange-400 font-bold">
+                  📝 错题复练模式
+                </p>
+                <p className="text-white/70 text-sm">
+                  你正在练习错题：{currentEquation.reactants.map(r => r.formula).join(' + ')} → {currentEquation.products.map(p => p.formula).join(' + ')}
+                </p>
+              </div>
+              <span className="px-3 py-1 rounded-full bg-orange-500/30 text-orange-300 text-xs font-medium">
+                第 {currentEquationIndex + 1} 题
+              </span>
+            </div>
+          )}
+
           <ProgressBar
             value={currentEquationIndex + 1}
             max={equations.length}
-            className="mb-8"
+            className="mb-6"
             showLabel
+          />
+
+          <QuestionNavigation
+            equations={equations}
+            currentIndex={currentEquationIndex}
+            questionResults={questionResults}
+            masteredEquations={masteredEquationIds}
+            onSelect={handleQuestionSelect}
+            onPrevious={handlePreviousQuestion}
+            onNext={handleNextQuestion}
           />
 
           <Card hover={false} className="mb-6">
@@ -494,6 +649,34 @@ export function Challenge() {
       </DragOverlay>
 
       <Modal
+        isOpen={showResumeConfirm}
+        onClose={() => handleResumeConfirm(false)}
+        title="⏯️ 发现未完成的练习"
+      >
+        <p className="text-white/70 mb-4">
+          你有一个未完成的练习，是否继续？
+        </p>
+        {savedProgressRef.current && (
+          <div className="p-4 rounded-xl bg-white/5 mb-4 text-sm">
+            <div className="grid grid-cols-2 gap-2 text-white/60">
+              <div>关卡：{getLevelById(savedProgressRef.current.levelId)?.name}</div>
+              <div>进度：第 {savedProgressRef.current.equationIndex + 1} 题</div>
+              <div>已用时：{formatTime(savedProgressRef.current.elapsedTime)}</div>
+              <div>已答题：{savedProgressRef.current.questionResults.length} 道</div>
+            </div>
+          </div>
+        )}
+        <ModalFooter>
+          <Button variant="secondary" onClick={() => handleResumeConfirm(false)}>
+            重新开始
+          </Button>
+          <Button onClick={() => handleResumeConfirm(true)}>
+            继续练习
+          </Button>
+        </ModalFooter>
+      </Modal>
+
+      <Modal
         isOpen={showResult}
         onClose={hideResultModal}
         showCloseButton={false}
@@ -609,36 +792,22 @@ export function Challenge() {
         </ModalFooter>
       </Modal>
 
-      <Modal
+      <LevelCompleteModal
         isOpen={levelCompleted}
+        stats={levelCompletionStats}
         onClose={handleFinish}
-        title="🏆 关卡完成！"
-        className="border-yellow-500/30"
-      >
-        <div className="text-center">
-          <div className="w-24 h-24 mx-auto mb-6 rounded-full bg-gradient-to-br from-yellow-400 to-orange-500 flex items-center justify-center shadow-2xl shadow-yellow-500/30 animate-pulse">
-            <Sparkles className="w-12 h-12 text-white" />
-          </div>
+        onViewStats={handleViewStats}
+        onFinish={handleFinish}
+      />
 
-          <h3 className="text-2xl font-bold text-white mb-2">
-            获得 {calculateStars(levelScore, elapsedTime, hintsUsed)} 星！
-          </h3>
-          <p className="text-white/60 mb-6">总得分: {levelScore} 分</p>
-
-          <div className="grid grid-cols-2 gap-4 mb-6">
-            <div className="p-4 rounded-xl bg-white/5">
-              <p className="text-xs text-white/50">总用时</p>
-              <p className="text-xl font-bold text-white">{formatTime(elapsedTime)}</p>
-            </div>
-            <div className="p-4 rounded-xl bg-white/5">
-              <p className="text-xs text-white/50">使用提示</p>
-              <p className="text-xl font-bold text-white">{hintsUsed} 次</p>
-            </div>
-          </div>
-
-          {unlockedThemes.length > 0 && (
-            <div className="p-4 rounded-xl bg-gradient-to-r from-green-500/20 to-emerald-500/20 border border-green-500/30 mb-6">
-              <p className="text-green-400 font-bold mb-2">🎉 解锁新主题！</p>
+      {unlockedThemes.length > 0 && levelCompleted && !levelCompletionStats && (
+        <div className="fixed bottom-8 right-8 max-w-sm animate-bounce-in z-40">
+          <Card hover={false} className="bg-gradient-to-br from-green-500/20 to-emerald-500/20 border border-green-500/30">
+            <CardContent className="py-4">
+              <p className="text-green-400 font-bold mb-2 flex items-center gap-2">
+                <Sparkles className="w-5 h-5" />
+                🎉 解锁新主题！
+              </p>
               {unlockedThemes.map(themeId => {
                 const t = getThemeByLevelId(themeId) || getThemeById(themeId);
                 return (
@@ -647,18 +816,10 @@ export function Challenge() {
                   </p>
                 );
               })}
-            </div>
-          )}
+            </CardContent>
+          </Card>
         </div>
-        <ModalFooter>
-          <Button variant="secondary" onClick={() => navigate('/stats')}>
-            查看详细成绩
-          </Button>
-          <Button onClick={handleFinish} size="lg">
-            完成
-          </Button>
-        </ModalFooter>
-      </Modal>
+      )}
     </DndContext>
   );
 }

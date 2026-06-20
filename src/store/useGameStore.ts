@@ -1,10 +1,13 @@
 import { create } from 'zustand';
-import type { GameState } from '../types';
+import type { GameState, QuestionResult, SavedGameProgress } from '../types';
 import { getLevelById } from '../data/levels';
 import { getEquationsByLevelId } from '../data/equations';
+import { getFromStorage, setToStorage } from '../hooks/useLocalStorage';
+
+const SAVED_PROGRESS_KEY = 'chem-balance-saved-progress';
 
 interface GameActions {
-  startLevel: (levelId: string) => void;
+  startLevel: (levelId: string, options?: { retryEquationId?: string }) => void;
   setCoefficient: (index: number, value: number) => void;
   resetCoefficients: () => void;
   useHint: () => void;
@@ -19,6 +22,11 @@ interface GameActions {
   resumeGame: () => void;
   endLevel: () => void;
   resetGame: () => void;
+  addQuestionResult: (result: QuestionResult) => void;
+  saveProgress: () => void;
+  loadProgress: () => SavedGameProgress | null;
+  clearSavedProgress: () => void;
+  setRetryMode: (isRetry: boolean, equationId?: string) => void;
 }
 
 const initialState: GameState = {
@@ -32,12 +40,16 @@ const initialState: GameState = {
   isPaused: false,
   showResult: false,
   lastAnswerCorrect: null,
+  isRetryMode: false,
+  retryEquationId: null,
+  questionResults: [],
 };
 
 export const useGameStore = create<GameState & GameActions>((set, get) => ({
   ...initialState,
 
-  startLevel: (levelId: string) => {
+  startLevel: (levelId: string, options = {}) => {
+    const { retryEquationId } = options;
     const level = getLevelById(levelId);
     if (!level) return;
 
@@ -58,7 +70,22 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
       isPaused: false,
       showResult: false,
       lastAnswerCorrect: null,
+      isRetryMode: !!retryEquationId,
+      retryEquationId: retryEquationId || null,
+      questionResults: [],
     });
+
+    if (retryEquationId) {
+      const idx = equations.findIndex(eq => eq.id === retryEquationId);
+      if (idx >= 0) {
+        const equation = equations[idx];
+        const compoundsCount = equation.reactants.length + equation.products.length;
+        set({
+          currentEquationIndex: idx,
+          coefficients: new Array(compoundsCount).fill(0),
+        });
+      }
+    }
   },
 
   setCoefficient: (index: number, value: number) => {
@@ -92,7 +119,7 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
   },
 
   nextEquation: () => {
-    const { currentLevelId, currentEquationIndex } = get();
+    const { currentLevelId, currentEquationIndex, questionResults } = get();
     if (!currentLevelId) return;
 
     const equations = getEquationsByLevelId(currentLevelId);
@@ -162,9 +189,86 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
 
   endLevel: () => {
     set(initialState);
+    get().clearSavedProgress();
   },
 
   resetGame: () => {
     set(initialState);
+    get().clearSavedProgress();
+  },
+
+  addQuestionResult: (result: QuestionResult) => {
+    set(state => ({
+      questionResults: [...state.questionResults, result],
+    }));
+  },
+
+  saveProgress: () => {
+    const { currentLevelId, currentEquationIndex, coefficients, elapsedTime, hintsUsed, attempts, questionResults } = get();
+    if (!currentLevelId) return;
+
+    const savedProgress: SavedGameProgress = {
+      levelId: currentLevelId,
+      equationIndex: currentEquationIndex,
+      coefficients: [...coefficients],
+      elapsedTime,
+      hintsUsed,
+      attempts,
+      questionResults: [...questionResults],
+      savedAt: new Date().toISOString(),
+    };
+
+    setToStorage(SAVED_PROGRESS_KEY, savedProgress);
+  },
+
+  loadProgress: () => {
+    const saved = getFromStorage<SavedGameProgress | null>(SAVED_PROGRESS_KEY, null);
+    if (!saved) return null;
+
+    const level = getLevelById(saved.levelId);
+    const equations = getEquationsByLevelId(saved.levelId);
+    if (!level || equations.length === 0) {
+      get().clearSavedProgress();
+      return null;
+    }
+
+    const equation = equations[saved.equationIndex];
+    if (!equation) {
+      get().clearSavedProgress();
+      return null;
+    }
+
+    const totalCompounds = equation.reactants.length + equation.products.length;
+
+    set({
+      currentLevelId: saved.levelId,
+      currentEquationIndex: saved.equationIndex,
+      coefficients: saved.coefficients.length === totalCompounds 
+        ? saved.coefficients 
+        : new Array(totalCompounds).fill(0),
+      elapsedTime: saved.elapsedTime,
+      hintsUsed: saved.hintsUsed,
+      attempts: saved.attempts,
+      questionResults: saved.questionResults || [],
+      startTime: Date.now() - saved.elapsedTime * 1000,
+      isPaused: false,
+      showResult: false,
+      lastAnswerCorrect: null,
+      isRetryMode: false,
+      retryEquationId: null,
+    });
+
+    return saved;
+  },
+
+  clearSavedProgress: () => {
+    setToStorage(SAVED_PROGRESS_KEY, null);
+  },
+
+  setRetryMode: (isRetry: boolean, equationId?: string) => {
+    set({
+      isRetryMode: isRetry,
+      retryEquationId: equationId || null,
+    });
   },
 }));

@@ -10,6 +10,7 @@ interface UseTimerReturn {
   resume: () => void;
   reset: () => void;
   stop: () => number;
+  set: (time: number) => void;
 }
 
 export function useTimer(autoStart: boolean = false): UseTimerReturn {
@@ -57,6 +58,11 @@ export function useTimer(autoStart: boolean = false): UseTimerReturn {
     return elapsedTime;
   }, [elapsedTime]);
 
+  const set = useCallback((time: number) => {
+    setElapsedTime(time);
+    startTimeRef.current = Date.now() - time * 1000;
+  }, []);
+
   useEffect(() => {
     if (autoStart) {
       start();
@@ -88,5 +94,6 @@ export function useTimer(autoStart: boolean = false): UseTimerReturn {
     resume,
     reset,
     stop,
+    set,
   };
 }

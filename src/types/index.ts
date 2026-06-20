@@ -123,4 +123,42 @@ export interface GameState {
   isPaused: boolean;
   showResult: boolean;
   lastAnswerCorrect: boolean | null;
+  isRetryMode: boolean;
+  retryEquationId: string | null;
+  questionResults: QuestionResult[];
+}
+
+export interface QuestionResult {
+  equationId: string;
+  correct: boolean;
+  timeSpent: number;
+  hintsUsed: number;
+  attempts: number;
+  answeredAt: string;
+  mastered: boolean;
+}
+
+export interface SavedGameProgress {
+  levelId: string;
+  equationIndex: number;
+  coefficients: number[];
+  elapsedTime: number;
+  hintsUsed: number;
+  attempts: number;
+  questionResults: QuestionResult[];
+  savedAt: string;
+}
+
+export interface LevelCompletionStats {
+  levelId: string;
+  levelName: string;
+  totalQuestions: number;
+  correctAnswers: number;
+  wrongAnswers: number;
+  totalHintsUsed: number;
+  totalTime: number;
+  stars: number;
+  score: number;
+  reactionTypeStats: Record<string, { correct: number; total: number }>;
+  questionResults: QuestionResult[];
 }
