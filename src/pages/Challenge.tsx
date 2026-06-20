@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   DndContext,
   DragEndEvent,
@@ -11,7 +11,7 @@ import {
   useSensors,
   closestCenter,
 } from '@dnd-kit/core';
-import { ArrowLeft, Lightbulb, RotateCcw, Send, Clock, Zap, Sparkles, X } from 'lucide-react';
+import { ArrowLeft, Lightbulb, RotateCcw, Send, Clock, Zap, Sparkles, X, FlaskConical, CheckCircle2 } from 'lucide-react';
 import { EquationDisplay } from '../components/equation/EquationDisplay';
 import { DraggableCard } from '../components/equation/DraggableCard';
 import { AtomStatsTable } from '../components/equation/AtomStatsTable';
@@ -22,22 +22,24 @@ import { ProgressBar } from '../components/ui/ProgressBar';
 import { useGameStore } from '../store/useGameStore';
 import { useProgressStore } from '../store/useProgressStore';
 import { useMistakesStore } from '../store/useMistakesStore';
-import { getEquationsByLevelId } from '../data/equations';
+import { getEquationsByLevelId, getEquationById } from '../data/equations';
 import { getLevelById, getThemeByLevelId, getThemeById } from '../data/levels';
 import { checkBalance } from '../utils/balanceChecker';
 import { validateAnswer } from '../utils/balanceChecker';
 import { generateCoefficientOptions, formatTime } from '../utils/mathUtils';
 import { calculateQuestionScore, calculateStars, generateLevelResult } from '../utils/scoring';
 import { generateAllHints, generateBalanceReasoning } from '../utils/hintGenerator';
-import { formatEquationString, getReactionTypeName } from '../utils/equationParser';
+import { formatEquationString, getReactionTypeName, getReactionTypeDescription } from '../utils/equationParser';
 import { useTimer } from '../hooks/useTimer';
 import { cn } from '../lib/utils';
-import type { HintStep } from '../types';
+import type { HintStep, Equation, ReactionType } from '../types';
 
 export function Challenge() {
   const { levelId } = useParams<{ levelId: string }>();
+  const [searchParams] = useSearchParams();
+  const equationIdParam = searchParams.get('equation');
   const navigate = useNavigate();
-  const { addWrongAnswer } = useMistakesStore();
+  const { addWrongAnswer, markMastered } = useMistakesStore();
   const { updateStats, updateLevelResult, checkAndUnlockThemes } = useProgressStore();
 
   const {
@@ -56,6 +58,7 @@ export function Challenge() {
     showResultModal,
     hideResultModal,
     nextEquation,
+    goToEquation,
     endLevel,
   } = useGameStore();
 
@@ -65,6 +68,7 @@ export function Challenge() {
   const [levelScore, setLevelScore] = useState(0);
   const [levelCompleted, setLevelCompleted] = useState(false);
   const [unlockedThemes, setUnlockedThemes] = useState<string[]>([]);
+  const [targetEquationId, setTargetEquationId] = useState<string | null>(null);
 
   const { elapsedTime, formattedTime, start: startTimer, pause: pauseTimer, reset: resetTimer } = useTimer(false);
 
@@ -82,9 +86,21 @@ export function Challenge() {
     })
   );
 
-  const level = useMemo(() => getLevelById(levelId || ''), [levelId]);
-  const theme = useMemo(() => getThemeByLevelId(levelId || ''), [levelId]);
-  const equations = useMemo(() => getEquationsByLevelId(levelId || ''), [levelId]);
+  const level = useMemo(() => {
+    if (!levelId) return null;
+    return getLevelById(levelId);
+  }, [levelId]);
+
+  const theme = useMemo(() => {
+    if (!levelId) return null;
+    return getThemeByLevelId(levelId);
+  }, [levelId]);
+
+  const equations = useMemo(() => {
+    if (!levelId) return [] as Equation[];
+    return getEquationsByLevelId(levelId);
+  }, [levelId]);
+
   const currentEquation = equations[currentEquationIndex];
 
   const balanceResult = useMemo(() => {
@@ -101,15 +117,42 @@ export function Challenge() {
 
   const coefficientOptions = useMemo(() => generateCoefficientOptions(10), []);
 
+  const reactionTypeMatchesTheme = useMemo(() => {
+    if (!currentEquation || !theme) return true;
+    const themeReactionTypes: Record<string, ReactionType[]> = {
+      'theme-1': ['synthesis', 'decomposition'],
+      'theme-2': ['single-replacement'],
+      'theme-3': ['double-replacement'],
+      'theme-4': ['redox'],
+      'theme-5': ['synthesis', 'decomposition', 'single-replacement', 'double-replacement', 'redox'],
+    };
+    const allowed = themeReactionTypes[theme.id] || [];
+    return allowed.includes(currentEquation.type);
+  }, [currentEquation, theme]);
+
   useEffect(() => {
     if (levelId && levelId !== currentLevelId) {
       startLevel(levelId);
       startTimer();
+
+      if (equationIdParam) {
+        setTargetEquationId(equationIdParam);
+      }
     }
     return () => {
       pauseTimer();
     };
-  }, [levelId, currentLevelId, startLevel, startTimer, pauseTimer]);
+  }, [levelId, currentLevelId, startLevel, startTimer, pauseTimer, equationIdParam]);
+
+  useEffect(() => {
+    if (targetEquationId && equations.length > 0 && currentLevelId === levelId) {
+      const idx = equations.findIndex(eq => eq.id === targetEquationId);
+      if (idx >= 0 && idx !== currentEquationIndex) {
+        goToEquation(idx);
+      }
+      setTargetEquationId(null);
+    }
+  }, [targetEquationId, equations, currentLevelId, levelId, currentEquationIndex, goToEquation]);
 
   useEffect(() => {
     if (currentEquation) {
@@ -157,6 +200,14 @@ export function Challenge() {
       updateStats(true, elapsedTime, hintsUsed, score);
       setLevelScore(prev => prev + score);
       showResultModal(true);
+
+      if (equationIdParam) {
+        const mistakeStore = useMistakesStore.getState();
+        const mistake = mistakeStore.getByEquationId(currentEquation.id);
+        if (mistake && !mistake.mastered) {
+          markMastered(mistake.id);
+        }
+      }
     } else {
       showResultModal(false);
 
@@ -217,15 +268,27 @@ export function Challenge() {
     navigate('/');
   };
 
-  if (!level || !currentEquation) {
+  if (!level || equations.length === 0) {
     return (
       <div className="min-h-screen pt-24 pb-12 px-8 ml-64 flex items-center justify-center">
         <div className="text-center">
-          <p className="text-white/60 text-lg">加载中...</p>
-          <Button onClick={handleBack} className="mt-4">
+          <p className="text-white/60 text-lg mb-4">
+            {levelId ? '关卡加载中...' : '请先选择一个关卡'}
+          </p>
+          <Button onClick={handleBack}>
             <ArrowLeft className="w-4 h-4 mr-2" />
             返回关卡选择
           </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentEquation) {
+    return (
+      <div className="min-h-screen pt-24 pb-12 px-8 ml-64 flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-white/60 text-lg">题目加载中...</p>
         </div>
       </div>
     );
@@ -335,24 +398,58 @@ export function Challenge() {
                   <div className="flex items-center justify-between">
                     <span className="text-white/60">原子平衡</span>
                     <span className={cn(
-                      'font-bold px-3 py-1 rounded-full text-sm',
+                      'font-bold px-3 py-1 rounded-full text-sm flex items-center gap-1',
                       balanceResult.isBalanced
                         ? 'bg-green-500/20 text-green-400'
                         : 'bg-red-500/20 text-red-400'
                     )}>
-                      {balanceResult.isBalanced ? '已平衡' : '未平衡'}
+                      {balanceResult.isBalanced ? (
+                        <><CheckCircle2 className="w-4 h-4" /> 已平衡</>
+                      ) : (
+                        <><X className="w-4 h-4" /> 未平衡</>
+                      )}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-white/60">最简系数</span>
                     <span className={cn(
-                      'font-bold px-3 py-1 rounded-full text-sm',
+                      'font-bold px-3 py-1 rounded-full text-sm flex items-center gap-1',
                       balanceResult.isSimplest
                         ? 'bg-green-500/20 text-green-400'
                         : 'bg-yellow-500/20 text-yellow-400'
                     )}>
                       {balanceResult.isSimplest ? '是' : '可化简'}
                     </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-white/60 flex items-center gap-1">
+                      <FlaskConical className="w-4 h-4" />
+                      反应类型
+                    </span>
+                    <span className="font-bold px-3 py-1 rounded-full text-sm bg-cyan-500/20 text-cyan-400">
+                      {getReactionTypeName(currentEquation.type)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-white/60">关卡主题匹配</span>
+                    <span className={cn(
+                      'font-bold px-3 py-1 rounded-full text-sm flex items-center gap-1',
+                      reactionTypeMatchesTheme
+                        ? 'bg-green-500/20 text-green-400'
+                        : 'bg-orange-500/20 text-orange-400'
+                    )}>
+                      {reactionTypeMatchesTheme ? (
+                        <><CheckCircle2 className="w-4 h-4" /> 符合</>
+                      ) : (
+                        '综合挑战'
+                      )}
+                    </span>
+                  </div>
+                  <div className="pt-2 border-t border-white/10">
+                    <p className="text-xs text-white/40 mb-1">反应说明</p>
+                    <p className="text-sm text-white/60">
+                      {getReactionTypeDescription(currentEquation.type)}
+                    </p>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-white/60">尝试次数</span>
@@ -411,6 +508,15 @@ export function Challenge() {
             <p className="text-white/70 mb-4">
               太棒了！你成功配平了这个方程式！
             </p>
+            <div className="p-4 rounded-xl bg-cyan-500/10 border border-cyan-500/20 mb-4 text-left">
+              <p className="text-cyan-400 font-medium mb-1 flex items-center gap-2">
+                <FlaskConical className="w-4 h-4" />
+                {getReactionTypeName(currentEquation.type)}
+              </p>
+              <p className="text-white/70 text-sm">
+                {getReactionTypeDescription(currentEquation.type)}
+              </p>
+            </div>
             <div className="grid grid-cols-3 gap-4 mb-6">
               <div className="p-3 rounded-xl bg-white/5">
                 <p className="text-xs text-white/50">用时</p>

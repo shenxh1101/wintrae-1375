@@ -35,6 +35,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<LevelSelect />} />
             <Route path="/challenge" element={<Challenge />} />
+            <Route path="/challenge/:levelId" element={<Challenge />} />
             <Route path="/hint-lab" element={<HintLab />} />
             <Route path="/mistakes" element={<Mistakes />} />
             <Route path="/stats" element={<Stats />} />

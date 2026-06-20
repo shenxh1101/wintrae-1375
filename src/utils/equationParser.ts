@@ -2,15 +2,48 @@ import type { ChemicalCompound } from '../types';
 
 export function parseFormula(formula: string): Record<string, number> {
   const elements: Record<string, number> = {};
-  const regex = /([A-Z][a-z]?)(\d*)/g;
-  let match;
 
-  while ((match = regex.exec(formula)) !== null) {
-    const element = match[1];
-    const count = match[2] ? parseInt(match[2], 10) : 1;
-    elements[element] = (elements[element] || 0) + count;
-  }
+  const parseSegment = (seg: string, multiplier: number = 1): void => {
+    let i = 0;
+    while (i < seg.length) {
+      if (seg[i] === '(') {
+        let depth = 1;
+        let j = i + 1;
+        while (j < seg.length && depth > 0) {
+          if (seg[j] === '(') depth++;
+          if (seg[j] === ')') depth--;
+          j++;
+        }
+        const inner = seg.substring(i + 1, j - 1);
+        let numStr = '';
+        while (j < seg.length && /\d/.test(seg[j])) {
+          numStr += seg[j];
+          j++;
+        }
+        const innerMultiplier = numStr ? parseInt(numStr, 10) : 1;
+        parseSegment(inner, multiplier * innerMultiplier);
+        i = j;
+      } else if (/[A-Z]/.test(seg[i])) {
+        let element = seg[i];
+        i++;
+        while (i < seg.length && /[a-z]/.test(seg[i])) {
+          element += seg[i];
+          i++;
+        }
+        let numStr = '';
+        while (i < seg.length && /\d/.test(seg[i])) {
+          numStr += seg[i];
+          i++;
+        }
+        const count = numStr ? parseInt(numStr, 10) : 1;
+        elements[element] = (elements[element] || 0) + count * multiplier;
+      } else {
+        i++;
+      }
+    }
+  };
 
+  parseSegment(formula);
   return elements;
 }
 

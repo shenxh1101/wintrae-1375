@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { BookX, CheckCircle, RotateCcw, Trash2, AlertCircle, Lightbulb, Clock, XCircle, ChevronDown, ChevronUp } from 'lucide-react';
 import { Card, CardHeader, CardContent, CardFooter } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -198,6 +199,7 @@ function MistakeCard({ mistake, onRetry, onMarkMastered, onRemove }: MistakeCard
 }
 
 export function Mistakes() {
+  const navigate = useNavigate();
   const { wrongAnswers, markMastered, removeWrongAnswer, clearAll, getUnmastered } = useMistakesStore();
   const [filter, setFilter] = useState<'all' | 'unmastered' | 'mastered'>('all');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -212,8 +214,10 @@ export function Mistakes() {
   const masteredCount = wrongAnswers.length - unmasteredCount;
 
   const handleRetry = (mistake: WrongAnswer) => {
-    const levelId = mistake.equationId.split('-').slice(0, 3).join('-');
-    window.location.href = `/challenge?level=${levelId}&equation=${mistake.equationId}`;
+    const equation = getEquationById(mistake.equationId);
+    if (equation) {
+      navigate(`/challenge/${equation.levelId}?equation=${mistake.equationId}`);
+    }
   };
 
   const handleClearAll = () => {
